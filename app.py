@@ -6,8 +6,7 @@ import numpy as np
 import pickle
 import os
 import warnings
-from collections import deque, Counter
-from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, WebRtcMode
+from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration
 
 # --- 1. IMPORT & PATH ---
 import mediapipe as mp
@@ -95,50 +94,47 @@ class SibiExpertProcessor(VideoProcessorBase):
                 mp_draw.draw_landmarks(img, hand_lms, mp_hands.HAND_CONNECTIONS)
         return av.VideoFrame.from_ndarray(img, format="bgr24")
 
-# --- 5. STYLE (Cyberpunk + Image Restrictor) ---
+# --- 5. STYLE ---
 st.markdown("""
     <style>
     .main { background-color: #0d1117; }
     .result-card { background-color: #161b22; padding: 25px; border-radius: 15px; border: 2px solid #00FFFF; text-align: center; }
     .label-big { color: #00FFFF; font-size: 80px; font-weight: 900; margin: 0; }
     .sentence-box { background-color: #161b22; padding: 20px; border-radius: 15px; border-left: 10px solid #00FFFF; min-height: 100px; color: #00FFFF; font-size: 28px; font-weight: bold; }
-    
-    /* FIX: Membatasi tinggi gambar avatar supaya tidak perlu scroll */
-    img {
-        max-height: 380px !important;
-        width: auto !important;
-        object-fit: contain;
-        display: block;
-        margin-left: auto;
-        margin-right: auto;
-    }
+    img { max-height: 380px !important; width: auto !important; object-fit: contain; display: block; margin-left: auto; margin-right: auto; }
     </style>
 """, unsafe_allow_html=True)
 
 # --- 6. MAIN LAYOUT ---
 st.title("PsychoGesture Anjay")
-
 col_visual, col_info = st.columns([1.3, 1], gap="large")
 
 if st.session_state.mode_aplikasi == "Kamera":
     with col_visual:
         st.subheader("🎥 Visual Input")
-        ctx = webrtc_streamer(key="cam", video_processor_factory=SibiExpertProcessor, async_processing=True)
+        # FIX: Konfigurasi RTC untuk browser user
+        RTC_CONFIG = RTCConfiguration({"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]})
+        ctx = webrtc_streamer(
+            key="cam", 
+            video_processor_factory=SibiExpertProcessor, 
+            rtc_configuration=RTC_CONFIG,
+            async_processing=True,
+            media_stream_constraints={"video": True, "audio": False}
+        )
         if st.button("🔄 Switch ke Mode Avatar", use_container_width=True):
             st.session_state.mode_aplikasi = "Avatar"; st.rerun()
 
     with col_info:
         st.subheader("📊 Hasil Deteksi")
         res_place = st.empty(); sent_place = st.empty()
-        
         if st.button(" Reset Kalimat", use_container_width=True):
             st.session_state.kalimat = ""; st.rerun()
 
-        while ctx.video_processor:
+        # FIX: Mengganti loop while dengan pengambilan data dari context
+        if ctx.video_processor:
             lbl = getattr(ctx.video_processor, 'label', "...")
             cnf = getattr(ctx.video_processor, 'conf', 0)
             
-            # LOGIKA AUTO-SENTENCE
             if lbl != "..." and lbl != st.session_state.last_label:
                 st.session_state.confirm_counter += 1
                 if st.session_state.confirm_counter > 15:
@@ -150,65 +146,41 @@ if st.session_state.mode_aplikasi == "Kamera":
 
             res_place.markdown(f'<div class="result-card"><h1 class="label-big">{lbl}</h1><p>{cnf}% Confidence</p></div>', unsafe_allow_html=True)
             sent_place.markdown(f'<div class="sentence-box">{st.session_state.kalimat}</div>', unsafe_allow_html=True)
-            time.sleep(0.1)
 
 else:
-    # --- 🤖 MODE AVATAR (LOGIKA FIX: PERKATA KELUHAN & HURUF) ---
+    # --- MODE AVATAR (LOGIKA TETAP SAMA) ---
     with col_visual:
         st.subheader(" Visual Avatar")
         avatar_place = st.empty()
-        
-        # Tampilan awal kosong
         if not st.session_state.kalimat:
             avatar_place.markdown('<div style="height:350px; border:2px dashed #333; border-radius:15px; display:flex; align-items:center; justify-content:center; color:#555;">Menunggu Input Psikolog...</div>', unsafe_allow_html=True)
-
         if st.button("🔄 swicth", use_container_width=True):
             st.session_state.mode_aplikasi = "Kamera"; st.rerun()
-
     with col_info:
         st.subheader("💬 Input Psikolog")
-        pesan = st.chat_input("Ketik kata atau kalimat (Contoh: SAYA BINGUNG DAN CEMAS)")
-        
+        pesan = st.chat_input("Ketik kata atau kalimat")
         if pesan:
             st.session_state.kalimat = pesan
-            
-            # 1. Pecah inputan berdasarkan spasi (Menjaga keutuhan kata)
             raw_words = pesan.strip().upper().split()
             daftar_kata = []
-            
-            # 2. Penggabungan kata majemuk berspasi agar tidak terpecah (Contoh: GAMPANG LELAH, SULIT TIDUR, SAKIT MUAL, BEBAN PIKIRAN)
             i = 0
             while i < len(raw_words):
-                if i < len(raw_words) - 1 and f"{raw_words[i]} {raw_words[i+1]}" in [
-                    "GAMPANG LELAH", "SULIT TIDUR", "SAKIT MUAL", "BEBAN PIKIRAN"
-                ]:
-                    daftar_kata.append(f"{raw_words[i]} {raw_words[i+1]}")
-                    i += 2
+                if i < len(raw_words) - 1 and f"{raw_words[i]} {raw_words[i+1]}" in ["GAMPANG LELAH", "SULIT TIDUR", "SAKIT MUAL", "BEBAN PIKIRAN"]:
+                    daftar_kata.append(f"{raw_words[i]} {raw_words[i+1]}"); i += 2
                 else:
-                    daftar_kata.append(raw_words[i])
-                    i += 1
-            
+                    daftar_kata.append(raw_words[i]); i += 1
             folder_base = "data_uji/citra BISINDO"
-            
-            # 3. Iterasi jalani setiap kata hasil pemisahan pintar
             for kata in daftar_kata:
-                # Otomatis konversi spasi ke strip jika nama foldernya di laptop lo pake strip
-                # (Sesuai semple.pdf lo: MUDAH-MARAH, PUTUS-ASA, MATI-RASA, TIDAK-SEMANGAT, RAGU-RAGU)
                 kata_folder = kata
                 if kata in ["MUDAH MARAH", "PUTUS ASA", "MATI RASA", "TIDAK SEMANGAT", "RAGU RAGU"]:
                     kata_folder = kata.replace(" ", "-")
-                
                 path_kata = os.path.join(folder_base, kata_folder)
-                
-                # JIKA KATA MERUPAKAN KELUHAN (Folder Perkata Ditemukan)
                 if os.path.exists(path_kata):
                     imgs = [f for f in os.listdir(path_kata) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
                     if imgs:
                         img_p = os.path.join(path_kata, imgs[0])
                         avatar_place.image(img_p, width=400, caption=f"Kata Isyarat: {kata}")
-                        time.sleep(2.0)  # Ditahan 2 detik biar isyarat perkatanya kelihatan jelas bray
-                
-                # JIKA KATA BIASA (Folder tidak ada, otomatis dieja per huruf alfabet)
+                        time.sleep(2.0)
                 else:
                     for huruf in kata:
                         path_huruf = os.path.join(folder_base, huruf)
@@ -217,9 +189,7 @@ else:
                             if imgs:
                                 img_p = os.path.join(path_huruf, imgs[0])
                                 avatar_place.image(img_p, width=400, caption=f"Mengeja: {huruf}")
-                                time.sleep(1.0)  # Jeda ejaan per huruf 1 detik
-                                
+                                time.sleep(1.0)
             st.success("Selesai Menerjemahkan!")
-
         st.write("**History Teks:**")
         st.markdown(f'<div class="sentence-box">{st.session_state.kalimat}</div>', unsafe_allow_html=True)
