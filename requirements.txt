@@ -1,8 +1,4 @@
 streamlit
 streamlit-webrtc
-av
 mediapipe
-pandas
-numpy
-scikit-learn
 opencv-python-headless
